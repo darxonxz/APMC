@@ -1,0 +1,97 @@
+name: Fetch Mandi Market Data
+
+# Trigger on schedule and manual dispatch
+on:
+  schedule:
+    # Run every 6 hours (0, 6, 12, 18 UTC)
+    - cron: '0 0,6,12,18 * * *'
+  
+  # Allow manual trigger from GitHub Actions UI
+  workflow_dispatch:
+
+jobs:
+  fetch-data:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # Step 1: Check out repository
+    - name: Checkout Repository
+      uses: actions/checkout@v3
+      with:
+        fetch-depth: 0  # Get full history
+    
+    # Step 2: Set up Python
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    # Step 3: Cache dependencies
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    # Step 4: Install dependencies
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas requests python-dotenv
+    
+    # Step 5: Run data fetch script
+    - name: Fetch Market Data
+      env:
+        MANDI_API_KEY: ${{ secrets.MANDI_API_KEY }}
+      run: |
+        python fetch_data_improved.py
+    
+    # Step 6: Check if data changed
+    - name: Check Data Changes
+      id: data-changes
+      run: |
+        if git diff --quiet data/market_data_master.csv; then
+          echo "changed=false" >> $GITHUB_OUTPUT
+          echo "✅ No data changes detected"
+        else
+          echo "changed=true" >> $GITHUB_OUTPUT
+          echo "📊 Data has been updated"
+        fi
+    
+    # Step 7: Configure git
+    - name: Configure Git
+      run: |
+        git config --local user.email "github-actions[bot]@users.noreply.github.com"
+        git config --local user.name "GitHub Actions"
+    
+    # Step 8: Commit and push changes
+    - name: Commit and Push Data
+      if: steps.data-changes.outputs.changed == 'true'
+      run: |
+        git add data/market_data_master.csv
+        git add fetch_data.log || true
+        git commit -m "📊 Update market data - $(date '+%Y-%m-%d %H:%M:%S UTC')"
+        git push origin main
+    
+    # Step 9: Create GitHub issue on failure
+    - name: Create Issue on Failure
+      if: failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: '❌ Market Data Fetch Failed',
+            body: `Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease check the logs for details.`
+          })
+    
+    # Step 10: Notify on success
+    - name: Success Notification
+      if: success() && steps.data-changes.outputs.changed == 'true'
+      run: |
+        echo "✅ Market data successfully fetched and updated"
+        echo "Repository: ${{ github.repository }}"
+        echo "Timestamp: $(date)"
