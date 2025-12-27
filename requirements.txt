@@ -1,0 +1,11 @@
+# Requirements for Production Deployment
+
+pandas==2.0.3
+requests==2.31.0
+streamlit==1.28.1
+plotly==5.17.0
+python-dotenv==1.0.0
+
+# Optional - for enhanced performance
+pandas-profiling==3.6.6  # Data profiling reports
+caching==1.2  # Additional caching utilities
