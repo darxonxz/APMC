@@ -65,15 +65,15 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
 
     st.sidebar.header("Filters")
 
-    # State filter
+    # State filter (no default selection)
     states = sorted(df["state"].dropna().unique().tolist()) if "state" in df.columns else []
     selected_states = st.sidebar.multiselect(
         "State",
         options=states,
-        default=states[:3] if states else [],
+        default=[],
     )
 
-    # District filter
+    # District filter depends on selected states (if any)
     if selected_states and "district" in df.columns and "state" in df.columns:
         dist_options = (
             df[df["state"].isin(selected_states)]["district"]
@@ -83,35 +83,36 @@ def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
             .tolist()
         )
     else:
-        dist_options = []
+        dist_options = (
+            sorted(df["district"].dropna().unique().tolist())
+            if "district" in df.columns
+            else []
+        )
 
     selected_districts = st.sidebar.multiselect(
         "District",
         options=dist_options,
-        default=dist_options[:5] if dist_options else [],
+        default=[],
     )
 
-    # Advanced filters
+    # Advanced filters (all optional)
     with st.sidebar.expander("Advanced filters"):
         if "commodity" in df.columns:
-            commodities = (
-                df["commodity"].dropna().sort_values().unique().tolist()
-            )
+            commodities = df["commodity"].dropna().sort_values().unique().tolist()
             selected_commodities = st.multiselect(
                 "Commodity",
                 options=commodities,
-                default=commodities[:5] if commodities else [],
+                default=[],
             )
         else:
             selected_commodities = []
 
-        min_date, max_date = None, None
         if "arrival_date" in df.columns:
             min_date = df["arrival_date"].min()
             max_date = df["arrival_date"].max()
             date_range = st.date_input(
-                "Arrival date range",
-                value=(min_date.date(), max_date.date()) if min_date and max_date else None,
+                "Arrival date range (optional)",
+                value=None,
             )
         else:
             date_range = None
