@@ -46,7 +46,7 @@ jobs:
       env:
         MANDI_API_KEY: ${{ secrets.MANDI_API_KEY }}
       run: |
-        python fetch_data_improved.py
+        python scripts/fetch_data_improved.py
     
     # Step 6: Check if data changed
     - name: Check Data Changes
