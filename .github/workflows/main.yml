@@ -1,187 +1,40 @@
-name: Update Market Data Every 6 Hours
+name: Fetch Mandi Market Data
 
 on:
   schedule:
-    - cron: '0 0,6,12,18 * * *'  # Every 6 hours (UTC)
-  workflow_dispatch:  # Allow manual trigger
+    - cron: "0 0,6,12,18 * * *"   # every 6 hours
+  workflow_dispatch:
 
 jobs:
   fetch-and-update:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v3
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.10'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install pandas requests python-dotenv
-    
-    - name: Fetch latest market data
-      env:
-        MANDI_API_KEY: ${{ secrets.MANDI_API_KEY }}
-      run: |
-        python << 'EOF'
-        import pandas as pd
-        import requests
-        import os
-        import logging
-        from datetime import datetime
-        
-        # Setup logging
-        logging.basicConfig(
-            level=logging.INFO,
-            format='%(asctime)s - %(levelname)s - %(message)s'
-        )
-        logger = logging.getLogger(__name__)
-        
-        API_KEY = os.getenv('MANDI_API_KEY')
-        BASE_URL = "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
-        BATCH_SIZE = 10000
-        MAX_RETRIES = 3
-        
-        def fetch_data_batch(offset):
-            """Fetch a single batch of 10,000 records"""
-            params = {
-                "api-key": API_KEY,
-                "format": "json",
-                "limit": BATCH_SIZE,
-                "offset": offset
-            }
-            
-            for attempt in range(MAX_RETRIES):
-                try:
-                    response = requests.get(BASE_URL, params=params, timeout=30)
-                    response.raise_for_status()
-                    data = response.json()
-                    
-                    if 'records' not in data or len(data['records']) == 0:
-                        return None
-                    
-                    df = pd.DataFrame(data['records'])
-                    logger.info(f"Fetched batch at offset {offset}: {len(df)} records")
-                    return df
-                    
-                except requests.exceptions.RequestException as e:
-                    logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
-                    if attempt < MAX_RETRIES - 1:
-                        import time
-                        time.sleep(2 ** attempt)  # Exponential backoff
-                    else:
-                        logger.error(f"Failed after {MAX_RETRIES} attempts")
-                        return None
-        
-        def fetch_all_data():
-            """Fetch all data with pagination"""
-            all_data = []
-            offset = 0
-            
-            while True:
-                batch_df = fetch_data_batch(offset)
-                
-                if batch_df is None or len(batch_df) == 0:
-                    logger.info("Reached end of data")
-                    break
-                
-                all_data.append(batch_df)
-                offset += BATCH_SIZE
-            
-            if not all_data:
-                logger.error("No data fetched!")
-                return None
-            
-            combined_df = pd.concat(all_data, ignore_index=True)
-            logger.info(f"Total records fetched: {len(combined_df)}")
-            return combined_df
-        
-        def clean_and_validate_data(df):
-            """Clean and validate data"""
-            # Normalize column names
-            df.columns = df.columns.str.strip().str.lower()
-            
-            # Convert price columns to numeric
-            price_cols = ['min_price', 'max_price', 'modal_price']
-            for col in price_cols:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            
-            # Validate prices
-            invalid_prices = ((df['min_price'] <= 0) | (df['max_price'] < df['min_price'])).sum()
-            if invalid_prices > 0:
-                logger.warning(f"Found {invalid_prices} invalid price ranges - removing")
-                df = df[(df['min_price'] > 0) & (df['max_price'] >= df['min_price'])]
-            
-            # Validate dates
-            df['arrival_date'] = pd.to_datetime(df['arrival_date'], errors='coerce')
-            nans_created = df['arrival_date'].isna().sum()
-            if nans_created > 0:
-                logger.warning(f"Date conversion created {nans_created} NaT values - removing")
-                df = df.dropna(subset=['arrival_date'])
-            
-            # Remove duplicates
-            duplicates = df.duplicated().sum()
-            if duplicates > 0:
-                logger.warning(f"Found {duplicates} duplicate records - removing")
-                df = df.drop_duplicates()
-            
-            logger.info(f"Data cleaned: {len(df)} records remaining")
-            return df
-        
-        # Fetch and process data
-        logger.info("Starting data fetch...")
-        new_df = fetch_all_data()
-        
-        if new_df is not None:
-            new_df = clean_and_validate_data(new_df)
-            
-            # Save to CSV
-            os.makedirs("data", exist_ok=True)
-            output_path = "data/market_data_master.csv"
-            new_df.to_csv(output_path, index=False)
-            logger.info(f"Data saved to {output_path}")
-        else:
-            logger.error("Data fetch failed!")
-            exit(1)
-        EOF
-    
-    - name: Verify data
-      run: |
-        python << 'EOF'
-        import pandas as pd
-        import os
-        
-        if not os.path.exists("data/market_data_master.csv"):
-            print("ERROR: File not created!")
-            exit(1)
-        
-        df = pd.read_csv("data/market_data_master.csv")
-        print(f"✅ Data verification successful!")
-        print(f"   Records: {len(df):,}")
-        print(f"   States: {df['state'].nunique()}")
-        print(f"   Last updated: {pd.to_datetime(df['arrival_date']).max()}")
-        EOF
-    
-    - name: Configure Git
-      run: |
-        git config user.email "actions@github.com"
-        git config user.name "GitHub Actions Bot"
-    
-    - name: Commit and push data
-      run: |
-        git add data/market_data_master.csv
-        git diff --quiet && git diff --staged --quiet || (
-          git commit -m "🔄 Update: Market data $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
-          git push
-        )
-    
-    - name: Notify on success
-      run: echo "✅ Data update completed successfully!"
-    
-    - name: Notify on failure
-      if: failure()
-      run: echo "❌ Data update failed - check logs above"
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests python-dotenv
+
+      - name: Fetch latest market data
+        env:
+          MANDI_API_KEY: ${{ secrets.MANDI_API_KEY }}
+        run: |
+          mkdir -p data
+          python scripts/fetch_data_improved.py
+
+      - name: Commit and push changes
+        if: ${{ github.ref == 'refs/heads/main' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/market_data_master.csv
+          git commit -m "Update mandi data - $(date -u +"%Y-%m-%dT%H:%M:%SZ")" || exit 0
+          git push origin main
