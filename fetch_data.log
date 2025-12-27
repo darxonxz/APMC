@@ -1,0 +1,23 @@
+2025-12-27 14:10:57,702 - INFO - ======================================================================
+2025-12-27 14:10:57,702 - INFO - MANDI DATA FETCH STARTED
+2025-12-27 14:10:57,702 - INFO - ======================================================================
+2025-12-27 14:10:57,702 - INFO - Fetching batch at offset 0 (Attempt 1/3)
+2025-12-27 14:11:07,836 - INFO - Successfully fetched 10000 records from offset 0
+2025-12-27 14:11:07,838 - INFO - Fetching batch at offset 10000 (Attempt 1/3)
+2025-12-27 14:11:09,486 - INFO - No more records at offset 10000
+2025-12-27 14:11:09,487 - INFO - Pagination complete - no more records to fetch
+2025-12-27 14:11:09,488 - INFO - Total records fetched: 10000
+2025-12-27 14:11:09,488 - INFO - Cleaning and validating data...
+2025-12-27 14:11:09,499 - INFO - Merging with existing data...
+2025-12-27 14:11:09,499 - INFO - Data directory ready: data
+2025-12-27 14:11:09,499 - INFO - Loading existing data from data/market_data_master.csv
+2025-12-27 14:11:09,545 - INFO - Existing records: 35731
+2025-12-27 14:11:09,547 - INFO - Combined records: 45731
+2025-12-27 14:11:09,576 - INFO - Removed 9542 duplicate records
+2025-12-27 14:11:09,576 - INFO - Data directory ready: data
+2025-12-27 14:11:09,713 - INFO - Data saved successfully: data/market_data_master.csv
+2025-12-27 14:11:09,713 - INFO - Total rows: 36189, Total columns: 10
+2025-12-27 14:11:09,713 - INFO - ======================================================================
+2025-12-27 14:11:09,713 - INFO - FETCH COMPLETED SUCCESSFULLY in 12.01 seconds
+2025-12-27 14:11:09,713 - INFO - Final dataset: 36189 records, 10 columns
+2025-12-27 14:11:09,714 - INFO - ======================================================================
