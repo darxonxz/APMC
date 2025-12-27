@@ -1,11 +1,5 @@
 # Requirements for Production Deployment
 
-python-dotenv==1.0.0
-
-# Optional - for enhanced performance
-pandas-profiling==3.6.6  # Data profiling reports
-caching==1.2  # Additional caching utilities
-
 streamlit
 pandas
 plotly
