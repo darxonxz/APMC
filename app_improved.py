@@ -1,433 +1,366 @@
-#!/usr/bin/env python3
-"""
-Indian APMC Market Prices Dashboard - Production Ready
-Features: Caching, Smart Filters, Lazy Loading, Advanced Visualizations
-"""
+import os
+from datetime import datetime
 
-import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
-import os
-import logging
+import streamlit as st
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
-# ============================================================================
-# SECTION 1: CACHING & DATA LOADING (10x Faster)
-# ============================================================================
+DATA_PATH = os.path.join("data", "market_data_master.csv")
 
-@st.cache_data
-def load_data(file_path: str) -> pd.DataFrame:
-    """Load CSV with caching - only runs once per session"""
-    try:
-        if not os.path.exists(file_path):
-            logger.error(f"File not found: {file_path}")
-            return pd.DataFrame()
-        
-        df = pd.read_csv(file_path)
-        
-        # Convert price columns to numeric
-        price_cols = ['min_price', 'max_price', 'modal_price']
-        for col in price_cols:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-        
-        logger.info(f"Data loaded successfully: {len(df)} rows")
-        return df
-        
-    except Exception as e:
-        logger.error(f"Error loading data: {str(e)}")
+
+@st.cache_data(show_spinner=False)
+def load_data(path: str) -> pd.DataFrame:
+    if not os.path.exists(path):
         return pd.DataFrame()
-
-
-@st.cache_data
-def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
-    """Prepare data with caching - transformations cached"""
-    df = df.dropna(subset=['min_price', 'max_price', 'modal_price'])
-    df['arrival_date'] = pd.to_datetime(df['arrival_date'], errors='coerce')
-    df['year'] = df['arrival_date'].dt.year
-    df['month'] = df['arrival_date'].dt.month
-    df['year_month'] = df['arrival_date'].dt.strftime('%Y-%m')
+    df = pd.read_csv(path)
     return df
 
 
-# ============================================================================
-# SECTION 2: PAGE CONFIGURATION
-# ============================================================================
+@st.cache_data(show_spinner=False)
+def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
 
-st.set_page_config(
-    page_title="Indian APMC Market Prices Dashboard",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+    df = df.copy()
 
-st.title("🌾 Indian APMC Market Prices Dashboard")
-st.markdown("Real-time agricultural commodity prices across Indian markets")
+    # Basic cleaning
+    if "arrivaldate" in df.columns:
+        df.rename(columns={"arrivaldate": "arrival_date"}, inplace=True)
 
-# ============================================================================
-# SECTION 3: LOAD & PREPARE DATA
-# ============================================================================
+    df["arrival_date"] = pd.to_datetime(df["arrival_date"], errors="coerce")
+    if "state" in df.columns:
+        df["state"] = df["state"].astype(str).str.strip()
+    if "district" in df.columns:
+        df["district"] = df["district"].astype(str).str.strip()
+    if "market" in df.columns:
+        df["market"] = df["market"].astype(str).str.strip()
+    if "commodity" in df.columns:
+        df["commodity"] = df["commodity"].astype(str).str.strip()
 
-FILE_PATH = os.path.join("data", "market_data_master.csv")
-df = load_data(FILE_PATH)
+    for col in ["minprice", "maxprice", "modalprice"]:
+        if col in df.columns:
+            df.rename(columns={col: col.replace("price", "_price")}, inplace=True)
 
-if df.empty:
-    st.error("📊 No data available. Please check if the data file exists.")
-    st.info("Expected file path: data/market_data_master.csv")
-    st.stop()
+    for col in ["min_price", "max_price", "modal_price"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-df = prepare_data(df)
+    # Drop obviously invalid rows
+    if {"min_price", "max_price"}.issubset(df.columns):
+        df = df[df["min_price"] > 0]
+        df = df[df["max_price"] >= df["min_price"]]
 
-# ============================================================================
-# SECTION 4: SMART SIDEBAR FILTERS (Fast Loading)
-# ============================================================================
+    if "arrival_date" in df.columns:
+        df = df.dropna(subset=["arrival_date"])
+        df["year"] = df["arrival_date"].dt.year
+        df["month"] = df["arrival_date"].dt.month
 
-st.sidebar.header("🔍 Filters")
+    return df
 
-# Smart defaults - only first 3 states selected
-states = st.sidebar.multiselect(
-    "📍 Select States",
-    options=sorted(df['state'].unique()),
-    default=sorted(df['state'].unique())[:3]
-)
 
-if not states:
-    st.warning("⚠️ Please select at least one state")
-    st.stop()
+def sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
 
-# Conditional districts - only load for selected states
-available_districts = sorted(df[df['state'].isin(states)]['district'].unique())
-districts = st.sidebar.multiselect(
-    "🏘️ Select Districts",
-    options=available_districts,
-    default=available_districts[:5] if len(available_districts) > 0 else []
-)
+    st.sidebar.header("Filters")
 
-# Advanced filters in expandable section (hidden until needed)
-with st.sidebar.expander("⚙️ Advanced Filters"):
-    available_commodities = sorted(df['commodity'].unique())
-    commodities = st.multiselect(
-        "🌽 Select Commodities",
-        options=available_commodities,
-        default=available_commodities[:5]
-    )
-    
-    available_varieties = sorted(df['variety'].unique())
-    varieties = st.multiselect(
-        "🔬 Select Varieties",
-        options=available_varieties,
-        default=[]
-    )
-    
-    available_grades = sorted(df['grade'].dropna().unique())
-    grades = st.multiselect(
-        "📊 Select Grades",
-        options=available_grades,
-        default=[]
+    # State filter
+    states = sorted(df["state"].dropna().unique().tolist()) if "state" in df.columns else []
+    selected_states = st.sidebar.multiselect(
+        "State",
+        options=states,
+        default=states[:3] if states else [],
     )
 
-# ============================================================================
-# SECTION 5: APPLY FILTERS
-# ============================================================================
-
-filtered_df = df[
-    (df['state'].isin(states)) &
-    (df['district'].isin(districts))
-]
-
-if 'commodities' in locals() and commodities:
-    filtered_df = filtered_df[filtered_df['commodity'].isin(commodities)]
-
-if 'varieties' in locals() and varieties:
-    filtered_df = filtered_df[filtered_df['variety'].isin(varieties)]
-
-if 'grades' in locals() and grades:
-    filtered_df = filtered_df[filtered_df['grade'].isin(grades)]
-
-filtered_df = filtered_df.sort_values(
-    by=['state', 'commodity', 'arrival_date'],
-    ascending=[True, True, False]
-)
-
-# ============================================================================
-# SECTION 6: KEY METRICS (Top of Dashboard)
-# ============================================================================
-
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric("📦 Total Records", f"{len(filtered_df):,}")
-
-with col2:
-    avg_min = filtered_df['min_price'].mean()
-    st.metric("💰 Avg Min Price", f"₹{avg_min:.0f}")
-
-with col3:
-    avg_max = filtered_df['max_price'].mean()
-    st.metric("💰 Avg Max Price", f"₹{avg_max:.0f}")
-
-with col4:
-    avg_modal = filtered_df['modal_price'].mean()
-    st.metric("💰 Avg Modal Price", f"₹{avg_modal:.0f}")
-
-# ============================================================================
-# SECTION 7: TABBED INTERFACE (Lazy Loading - On Demand)
-# ============================================================================
-
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Overview",
-    "📈 Trends",
-    "🔍 Analysis",
-    "📋 Data",
-    "⚙️ Details"
-])
-
-# ============================================================================
-# TAB 1: OVERVIEW (Basic Charts)
-# ============================================================================
-
-with tab1:
-    st.subheader("📊 Market Overview")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Year-wise Average Modal Price
-        yearly_data = filtered_df.groupby('year').agg({
-            'min_price': 'mean',
-            'max_price': 'mean',
-            'modal_price': 'mean'
-        }).reset_index()
-        
-        if not yearly_data.empty:
-            fig = px.line(
-                yearly_data,
-                x='year',
-                y=['min_price', 'max_price', 'modal_price'],
-                markers=True,
-                labels={'value': 'Average Price (₹)', 'year': 'Year', 'variable': 'Price Type'},
-                title="Year-wise Average Prices"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # State-wise Average Modal Price
-        state_avg = filtered_df.groupby('state')['modal_price'].mean().sort_values(ascending=False).head(10)
-        
-        if not state_avg.empty:
-            fig = px.bar(
-                x=state_avg.values,
-                y=state_avg.index,
-                orientation='h',
-                labels={'x': 'Average Modal Price (₹)', 'y': 'State'},
-                title="Top 10 States by Avg Modal Price",
-                color=state_avg.values,
-                color_continuous_scale='Viridis'
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-# ============================================================================
-# TAB 2: TRENDS (Time Series Analysis)
-# ============================================================================
-
-with tab2:
-    st.subheader("📈 Price Trends")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Monthly Trend
-        monthly_data = filtered_df.groupby('year_month').agg({
-            'modal_price': 'mean',
-            'min_price': 'mean',
-            'max_price': 'mean'
-        }).reset_index().sort_values('year_month')
-        
-        if not monthly_data.empty:
-            fig = px.line(
-                monthly_data,
-                x='year_month',
-                y='modal_price',
-                markers=True,
-                labels={'modal_price': 'Modal Price (₹)', 'year_month': 'Month'},
-                title="Monthly Average Modal Price Trend"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Commodity Comparison
-        top_commodities = filtered_df['commodity'].value_counts().head(5).index
-        commodity_trend = filtered_df[filtered_df['commodity'].isin(top_commodities)].groupby(
-            ['year_month', 'commodity']
-        )['modal_price'].mean().reset_index()
-        
-        if not commodity_trend.empty:
-            fig = px.line(
-                commodity_trend,
-                x='year_month',
-                y='modal_price',
-                color='commodity',
-                markers=True,
-                title="Top 5 Commodities - Price Trends"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-# ============================================================================
-# TAB 3: ANALYSIS (Advanced Visualizations)
-# ============================================================================
-
-with tab3:
-    st.subheader("🔍 Detailed Analysis")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Price Distribution
-        if not filtered_df.empty:
-            fig = px.box(
-                filtered_df,
-                x='commodity',
-                y='modal_price',
-                color='state',
-                title="Price Distribution by Commodity",
-                labels={'modal_price': 'Modal Price (₹)', 'commodity': 'Commodity'}
-            )
-            fig.update_layout(height=500, xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
-    
-    with col2:
-        # Min vs Max Prices Scatter
-        if not filtered_df.empty:
-            fig = px.scatter(
-                filtered_df.groupby('commodity').agg({
-                    'min_price': 'mean',
-                    'max_price': 'mean',
-                    'modal_price': 'mean'
-                }).reset_index(),
-                x='min_price',
-                y='max_price',
-                size='modal_price',
-                hover_name='commodity',
-                color='modal_price',
-                color_continuous_scale='Turbo',
-                title="Min vs Max Prices by Commodity",
-                labels={'min_price': 'Avg Min Price (₹)', 'max_price': 'Avg Max Price (₹)'}
-            )
-            st.plotly_chart(fig, use_container_width=True)
-    
-    # State-Commodity Heatmap
-    st.subheader("State-Commodity Analysis")
-    heatmap_df = filtered_df.groupby(['state', 'commodity']).size().reset_index(name='count')
-    
-    if not heatmap_df.empty:
-        heatmap_pivot = heatmap_df.pivot_table(
-            index='state',
-            columns='commodity',
-            values='count',
-            fill_value=0
+    # District filter
+    if selected_states and "district" in df.columns and "state" in df.columns:
+        dist_options = (
+            df[df["state"].isin(selected_states)]["district"]
+            .dropna()
+            .sort_values()
+            .unique()
+            .tolist()
         )
-        
-        fig = px.imshow(
-            heatmap_pivot,
-            labels=dict(x="Commodity", y="State", color="Record Count"),
-            title="Commodity Distribution Across States",
-            color_continuous_scale='YlOrRd',
-            height=600
+    else:
+        dist_options = []
+
+    selected_districts = st.sidebar.multiselect(
+        "District",
+        options=dist_options,
+        default=dist_options[:5] if dist_options else [],
+    )
+
+    # Advanced filters
+    with st.sidebar.expander("Advanced filters"):
+        if "commodity" in df.columns:
+            commodities = (
+                df["commodity"].dropna().sort_values().unique().tolist()
+            )
+            selected_commodities = st.multiselect(
+                "Commodity",
+                options=commodities,
+                default=commodities[:5] if commodities else [],
+            )
+        else:
+            selected_commodities = []
+
+        min_date, max_date = None, None
+        if "arrival_date" in df.columns:
+            min_date = df["arrival_date"].min()
+            max_date = df["arrival_date"].max()
+            date_range = st.date_input(
+                "Arrival date range",
+                value=(min_date.date(), max_date.date()) if min_date and max_date else None,
+            )
+        else:
+            date_range = None
+
+    mask = pd.Series(True, index=df.index)
+
+    if selected_states and "state" in df.columns:
+        mask &= df["state"].isin(selected_states)
+    if selected_districts and "district" in df.columns:
+        mask &= df["district"].isin(selected_districts)
+    if selected_commodities and "commodity" in df.columns:
+        mask &= df["commodity"].isin(selected_commodities)
+
+    if (
+        date_range
+        and isinstance(date_range, (tuple, list))
+        and len(date_range) == 2
+        and "arrival_date" in df.columns
+    ):
+        start, end = pd.to_datetime(date_range[0]), pd.to_datetime(date_range[1])
+        mask &= df["arrival_date"].between(start, end)
+
+    return df[mask].copy()
+
+
+def overview_tab(df: pd.DataFrame):
+    st.subheader("Overview")
+
+    if df.empty:
+        st.info("No data to display for current filters.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Records", f"{len(df):,}")
+    with col2:
+        if "state" in df.columns:
+            st.metric("States", df["state"].nunique())
+    with col3:
+        if "commodity" in df.columns:
+            st.metric("Commodities", df["commodity"].nunique())
+
+    if {"arrival_date", "modal_price"}.issubset(df.columns):
+        daily = (
+            df.groupby("arrival_date", as_index=False)["modal_price"]
+            .mean()
+        )
+        fig = px.line(
+            daily,
+            x="arrival_date",
+            y="modal_price",
+            title="Average modal price over time",
         )
         st.plotly_chart(fig, use_container_width=True)
 
-# ============================================================================
-# TAB 4: DATA (Table with Pagination)
-# ============================================================================
 
-with tab4:
-    st.subheader("📋 Filtered Market Data")
-    
-    st.write(f"Showing {min(1000, len(filtered_df)):,} of {len(filtered_df):,} records")
-    
-    # Display columns
-    display_columns = ['state', 'district', 'market', 'commodity', 'variety', 'grade', 
-                      'arrival_date', 'min_price', 'max_price', 'modal_price']
-    
-    display_df = filtered_df[display_columns].head(1000).copy()
-    display_df['arrival_date'] = display_df['arrival_date'].dt.strftime('%d-%m-%Y')
-    
+def trends_tab(df: pd.DataFrame):
+    st.subheader("Trends")
+
+    if df.empty or "year" not in df.columns or "modal_price" not in df.columns:
+        st.info("Not enough data for trend analysis.")
+        return
+
+    # Year-wise
+    yearly = (
+        df.groupby("year", as_index=False)["modal_price"]
+        .mean()
+        .sort_values("year")
+    )
+    fig_year = px.line(
+        yearly,
+        x="year",
+        y="modal_price",
+        markers=True,
+        title="Average modal price by year",
+    )
+    st.plotly_chart(fig_year, use_container_width=True)
+
+    # Monthly (within year)
+    if "month" in df.columns:
+        monthly = (
+            df.groupby(["year", "month"], as_index=False)["modal_price"]
+            .mean()
+            .sort_values(["year", "month"])
+        )
+        monthly["year_month"] = monthly["year"].astype(str) + "-" + monthly["month"].astype(str)
+        fig_month = px.line(
+            monthly,
+            x="year_month",
+            y="modal_price",
+            title="Average modal price by month",
+        )
+        st.plotly_chart(fig_month, use_container_width=True)
+
+
+def analysis_tab(df: pd.DataFrame):
+    st.subheader("Price analysis")
+
+    if df.empty or "modal_price" not in df.columns:
+        st.info("Not enough data for analysis.")
+        return
+
+    # Top commodities by price
+    if "commodity" in df.columns and "state" in df.columns:
+        top_n = st.slider("Top N commodities", 5, 30, 10, 1)
+        agg = (
+            df.groupby("commodity", as_index=False)["modal_price"]
+            .mean()
+            .sort_values("modal_price", ascending=False)
+            .head(top_n)
+        )
+        fig_top = px.bar(
+            agg,
+            x="commodity",
+            y="modal_price",
+            title=f"Top {top_n} commodities by average modal price",
+        )
+        fig_top.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_top, use_container_width=True)
+
+    # Boxplot distribution
+    if "commodity" in df.columns:
+        top_for_box = (
+            df["commodity"].value_counts()
+            .head(10)
+            .index.tolist()
+        )
+        sub_df = df[df["commodity"].isin(top_for_box)]
+        fig_box = px.box(
+            sub_df,
+            x="commodity",
+            y="modal_price",
+            title="Price distribution for top 10 commodities",
+        )
+        fig_box.update_layout(xaxis_tickangle=-45)
+        st.plotly_chart(fig_box, use_container_width=True)
+
+    # Min vs Max scatter
+    if {"min_price", "max_price"}.issubset(df.columns):
+        fig_scatter = px.scatter(
+            df.sample(min(len(df), 3000), random_state=42)
+            if len(df) > 3000 else df,
+            x="min_price",
+            y="max_price",
+            color="commodity" if "commodity" in df.columns else None,
+            title="Min vs Max price (sampled)",
+            opacity=0.6,
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+
+
+def data_tab(df: pd.DataFrame):
+    st.subheader("Filtered data")
+
+    if df.empty:
+        st.info("No data for current filters.")
+        return
+
+    display_cols = [
+        c for c in df.columns
+        if c
+        in [
+            "state",
+            "district",
+            "market",
+            "commodity",
+            "variety",
+            "grade",
+            "arrival_date",
+            "min_price",
+            "max_price",
+            "modal_price",
+        ]
+        or c in ["year", "month"]
+    ]
+
+    st.write(f"Showing {min(1000, len(df)):,} of {len(df):,} records")
     st.dataframe(
-        display_df,
+        df[display_cols].head(1000),
         use_container_width=True,
+        hide_index=True,
         height=500,
-        hide_index=True
     )
-    
-    # Download button
-    csv_data = filtered_df.to_csv(index=False)
+
+    csv = df[display_cols].to_csv(index=False)
     st.download_button(
-        label="📥 Download Full Data as CSV",
-        data=csv_data,
+        "📥 Download full filtered data (CSV)",
+        data=csv,
         file_name=f"mandi_data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-        mime="text/csv"
+        mime="text/csv",
     )
 
-# ============================================================================
-# TAB 5: DETAILS (Summary Statistics)
-# ============================================================================
 
-with tab5:
-    st.subheader("⚙️ Data Summary & Statistics")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Coverage Statistics**")
-        stats = {
-            "States": filtered_df['state'].nunique(),
-            "Districts": filtered_df['district'].nunique(),
-            "Markets": filtered_df['market'].nunique(),
-            "Commodities": filtered_df['commodity'].nunique(),
-            "Varieties": filtered_df['variety'].nunique(),
-            "Grades": filtered_df['grade'].nunique()
-        }
-        for key, value in stats.items():
-            st.metric(key, value)
-    
-    with col2:
-        st.write("**Price Statistics**")
-        price_stats = {
-            "Min Price Range": f"₹{filtered_df['min_price'].min():.0f} - ₹{filtered_df['min_price'].max():.0f}",
-            "Max Price Range": f"₹{filtered_df['max_price'].min():.0f} - ₹{filtered_df['max_price'].max():.0f}",
-            "Modal Price Avg": f"₹{filtered_df['modal_price'].mean():.0f}",
-            "Modal Price Std": f"₹{filtered_df['modal_price'].std():.0f}",
-        }
-        for key, value in price_stats.items():
-            st.write(f"**{key}**: {value}")
-    
-    # Top commodities
-    st.subheader("Top Commodities")
-    top_commodities = filtered_df['commodity'].value_counts().head(10)
-    fig = px.bar(
-        x=top_commodities.values,
-        y=top_commodities.index,
-        orientation='h',
-        labels={'x': 'Number of Records', 'y': 'Commodity'},
-        title="Top 10 Commodities by Record Count",
-        color=top_commodities.values,
-        color_continuous_scale='Blues'
+def details_tab(df: pd.DataFrame):
+    st.subheader("Dataset details")
+
+    if df.empty:
+        st.info("No data loaded.")
+        return
+
+    st.write("**Raw columns**:")
+    st.code(", ".join(df.columns))
+
+    if "arrival_date" in df.columns:
+        st.write(
+            f"Date range: {df['arrival_date'].min().date()} → {df['arrival_date'].max().date()}"
+        )
+    if "state" in df.columns:
+        st.write(f"States: {df['state'].nunique()}")
+    if "district" in df.columns:
+        st.write(f"Districts: {df['district'].nunique()}")
+    if "market" in df.columns:
+        st.write(f"Markets: {df['market'].nunique()}")
+    if "commodity" in df.columns:
+        st.write(f"Commodities: {df['commodity'].nunique()}")
+
+
+def main():
+    st.set_page_config(
+        page_title="APMC / Mandi Market Dashboard",
+        layout="wide",
     )
-    st.plotly_chart(fig, use_container_width=True)
 
-# ============================================================================
-# FOOTER
-# ============================================================================
+    st.title("APMC / Mandi Market Dashboard")
 
-st.divider()
-st.markdown("""
-<div style='text-align: center; color: #888; font-size: 12px;'>
-    Last Updated: 27-12-2025 | Records: 19,982 | Coverage: 27 States | Markets: 1,281
-</div>
-""", unsafe_allow_html=True)
+    df_raw = load_data(DATA_PATH)
+    if df_raw.empty:
+        st.error("No data found. Please ensure `data/market_data_master.csv` exists.")
+        st.stop()
+
+    df = prepare_data(df_raw)
+
+    filtered_df = sidebar_filters(df)
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📊 Overview", "📈 Trends", "🔍 Analysis", "📋 Data", "ℹ️ Details"]
+    )
+
+    with tab1:
+        overview_tab(filtered_df)
+    with tab2:
+        trends_tab(filtered_df)
+    with tab3:
+        analysis_tab(filtered_df)
+    with tab4:
+        data_tab(filtered_df)
+    with tab5:
+        details_tab(filtered_df)
+
+
+if __name__ == "__main__":
+    main()
