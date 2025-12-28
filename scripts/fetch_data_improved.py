@@ -1,184 +1,64 @@
-import json
-import logging
-import os
-import time
-from typing import List, Optional
-
 import pandas as pd
 import requests
-from dotenv import load_dotenv
+import os
 
+API_KEY = os.getenv("MANDI_API_KEY", "")  # 👈 from GitHub Secrets
 
-# Load .env if present
-load_dotenv()
+if not API_KEY:
+    raise RuntimeError("DATA_GOV_API_KEY not set")
 
-API_URL = (
-    "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
-)
-API_KEY = os.getenv("MANDI_API_KEY", "")
-FORMAT = "json"
-BATCH_SIZE = 10000
-MAX_RETRIES = 3
-TIMEOUT = 30
-OUTPUT_PATH = os.path.join("data", "market_data_master.csv")
+url = "https://api.data.gov.in/resource/9ef84268-d588-465a-a308-a864a43d0070"
+LIMIT = 10000
+offset = 0
+all_records = []
 
+headers = {
+    "User-Agent": "mandi-data-pipeline/1.0"
+}
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()],
-)
-logger = logging.getLogger(__name__)
-
-
-def fetch_batch(offset: int) -> Optional[pd.DataFrame]:
+while True:
     params = {
         "api-key": API_KEY,
-        "format": FORMAT,
-        "limit": BATCH_SIZE,
-        "offset": offset,
+        "format": "json",
+        "limit": LIMIT,
+        "offset": offset
     }
 
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            logger.info(f"Fetching batch at offset {offset} (attempt {attempt})")
-            resp = requests.get(API_URL, params=params, timeout=TIMEOUT)
-            resp.raise_for_status()
-            data = resp.json()
+    r = requests.get(url, params=params, headers=headers, timeout=30)
 
-            if "records" not in data:
-                logger.error("No 'records' key in response")
-                return None
+    if r.status_code == 403:
+        raise RuntimeError("403 Forbidden – API key invalid or quota exceeded")
 
-            records = data["records"]
-            if not records:
-                logger.info("Empty records list returned.")
-                return pd.DataFrame()
+    r.raise_for_status()
 
-            df = pd.DataFrame(records)
-            return df
+    data = r.json().get("records", [])
+    if not data:
+        break
 
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Network error: {e}")
-            if attempt == MAX_RETRIES:
-                logger.error("Max retries reached, aborting.")
-                return None
-            time.sleep(2**attempt)
-        except json.JSONDecodeError:
-            logger.error("Failed to decode JSON response.")
-            return None
-        except Exception as e:
-            logger.exception(f"Unexpected error: {e}")
-            return None
+    all_records.extend(data)
+    offset += LIMIT
 
-    return None
+print("Fetched records:", len(all_records))
 
+new_df = pd.DataFrame(all_records)
+new_df.columns = new_df.columns.str.strip().str.lower()
+new_df["arrival_date"] = pd.to_datetime(new_df["arrival_date"], errors="coerce")
 
-def fetch_all() -> pd.DataFrame:
-    if not API_KEY:
-        raise RuntimeError("MANDI_API_KEY is not set in environment.")
+DATA_FILE = "data/market_data_master.csv"
+os.makedirs("data", exist_ok=True)
 
-    all_dfs: List[pd.DataFrame] = []
-    offset = 0
+if os.path.exists(DATA_FILE):
+    old_df = pd.read_csv(DATA_FILE)
+    df = pd.concat([old_df, new_df], ignore_index=True)
+else:
+    df = new_df
 
-    while True:
-        batch_df = fetch_batch(offset)
-        if batch_df is None:
-            # Hard error
-            break
+df.drop_duplicates(
+    subset=["state", "district", "market", "commodity", "variety", "arrival_date"],
+    keep="last",
+    inplace=True
+)
 
-        if batch_df.empty:
-            # No more data
-            break
+df.to_csv(DATA_FILE, index=False)
 
-        all_dfs.append(batch_df)
-        logger.info(f"Fetched {len(batch_df)} records at offset {offset}")
-        offset += BATCH_SIZE
-
-    if not all_dfs:
-        return pd.DataFrame()
-
-    combined = pd.concat(all_dfs, ignore_index=True)
-    logger.info(f"Total fetched records: {len(combined)}")
-    return combined
-
-
-def clean_data(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-
-    df = df.copy()
-
-    # Rename to simpler snake_case
-    col_map = {
-        "state": "state",
-        "district": "district",
-        "market": "market",
-        "commodity": "commodity",
-        "variety": "variety",
-        "grade": "grade",
-        "arrival_date": "arrival_date",
-        "min_price": "min_price",
-        "max_price": "max_price",
-        "modal_price": "modal_price",
-    }
-
-    # Try to map also from original API names
-    for col in list(df.columns):
-        lc = col.lower()
-        if lc in col_map and col_map[lc] not in df.columns:
-            df.rename(columns={col: col_map[lc]}, inplace=True)
-
-    # Strip strings
-    for col in ["state", "district", "market", "commodity", "variety", "grade"]:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
-
-    # Dates
-    if "arrival_date" in df.columns:
-        df["arrival_date"] = pd.to_datetime(df["arrival_date"], errors="coerce")
-
-    # Prices
-    for col in ["min_price", "max_price", "modal_price"]:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    # Basic validation
-    invalid_prices = 0
-    if {"min_price", "max_price"}.issubset(df.columns):
-        invalid_prices = ((df["min_price"] <= 0) | (df["max_price"] < df["min_price"])).sum()
-        df = df[(df["min_price"] > 0) & (df["max_price"] >= df["min_price"])]
-
-    if invalid_prices > 0:
-        logger.warning(f"Removed {invalid_prices} rows with invalid price ranges.")
-
-    if "arrival_date" in df.columns:
-        before = len(df)
-        df = df.dropna(subset=["arrival_date"])
-        dropped = before - len(df)
-        if dropped > 0:
-            logger.warning(f"Dropped {dropped} rows with invalid arrival_date.")
-
-    logger.info(f"Cleaned dataset rows: {len(df)}")
-    return df
-
-
-def main():
-    os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
-
-    try:
-        df_raw = fetch_all()
-        if df_raw.empty:
-            logger.error("No data fetched; output file will not be updated.")
-            return
-
-        df_clean = clean_data(df_raw)
-        df_clean.to_csv(OUTPUT_PATH, index=False)
-        logger.info(f"Saved cleaned data to {OUTPUT_PATH} ({len(df_clean)} rows)")
-
-    except Exception as e:
-        logger.exception(f"Fatal error in fetch script: {e}")
-
-
-if __name__ == "__main__":
-    main()
+print("Final rows:", len(df))
