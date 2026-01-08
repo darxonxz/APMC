@@ -58,7 +58,3 @@ df.drop_duplicates(
     keep="last",
     inplace=True
 )
-
-df.to_csv(DATA_FILE, index=False)
-
-print("Final rows:", len(df))
